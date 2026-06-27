@@ -48,7 +48,7 @@ offline-med-agent/
 ```bash
 git clone https://github.com/SorenUPP/AIAgent.git
 cd AIAgent/offline-med-agent
-pip install -r requirements.txt
+start the INSTALL.bat as administrator (this will install python & Ollama and other dependencies
 ```
 
 ### Run Ollama
