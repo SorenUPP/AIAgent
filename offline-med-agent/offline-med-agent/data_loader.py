@@ -1,8 +1,6 @@
-import logging
 import pandas as pd
 from openpyxl import load_workbook
 
-logger = logging.getLogger(__name__)
 
 def load_data(file_path) -> dict:
     """
@@ -38,9 +36,8 @@ def load_data(file_path) -> dict:
             if "Patient ID" in df.columns:
                 df = df[df["Patient ID"].astype(str).str.match(r"PT-\d{4}")]
             result[sheet] = df.reset_index(drop=True)
-        except Exception:
-            logger.exception("Failed to parse sheet '%s'", sheet)
-            result[sheet] = pd.DataFrame()  
+        except Exception as e:
+            result[sheet] = pd.DataFrame()  # empty on error
     return result
 
 

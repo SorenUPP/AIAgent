@@ -1,83 +1,12 @@
-import logging
 import streamlit as st
 import pandas as pd
+import json
+import time
 
-import config
-import auth_db
 from data_loader import load_data, get_quick_stats
 from agent import run_agent, check_ollama_status
 from tools import get_flag_counts, get_diagnosis_counts, get_age_distribution
 
-logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-auth_db.init_db()
-
-
-def _first_run_setup():
-    """Shown only when the user database is empty — creates the first admin account."""
-    st.markdown("## 🩺 MedAgent — Create Admin Account")
-    st.info("No accounts exist yet. Create the first admin account to get started.")
-
-    with st.form("bootstrap_admin_form"):
-        username = st.text_input("Admin username")
-        password = st.text_input("Password (min 8 characters)", type="password")
-        confirm = st.text_input("Confirm password", type="password")
-        submitted = st.form_submit_button("Create admin account")
-
-    if submitted:
-        if not username.strip():
-            st.error("Username is required.")
-        elif len(password) < 8:
-            st.error("Password must be at least 8 characters.")
-        elif password != confirm:
-            st.error("Passwords do not match.")
-        else:
-            created = auth_db.create_user(username.strip(), password, role="admin")
-            if created:
-                st.success(f"Admin account '{username}' created. Refreshing...")
-                auth_db.log_action(username.strip(), "account_created", detail="first-run admin")
-                st.rerun()
-            else:
-                st.error("That username is already taken.")
-
-    st.stop()
-
-
-def require_login():
-    """Blocks the rest of the app until a user is authenticated."""
-    if "auth_user" not in st.session_state:
-        st.session_state.auth_user = None
-
-    if st.session_state.auth_user:
-        return  # already logged in
-
-    if auth_db.user_count() == 0:
-        _first_run_setup()
-        return  # unreachable (st.stop() above), kept for clarity
-
-    st.markdown("## 🩺 MedAgent — Sign in")
-
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in")
-
-    if submitted:
-        user = auth_db.verify_credentials(username, password)
-        if user:
-            st.session_state.auth_user = user
-            auth_db.log_action(user["username"], "login")
-            st.rerun()
-        else:
-            auth_db.log_action(username or "(unknown)", "login_failed")
-            st.error("Invalid username or password.")
-
-    st.stop()  # don't render anything below until logged in
-
-
-require_login()
 # ─────────────────────────────────────────────────────────────
 # Page config
 # ─────────────────────────────────────────────────────────────
@@ -387,34 +316,6 @@ if "file_loaded" not in st.session_state:
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🩺 MedAgent")
-    st.caption(f"Signed in as **{st.session_state.auth_user['username']}** "
-               f"({st.session_state.auth_user['role']})")
-    if st.button("🔒 Log out"):
-        auth_db.log_action(st.session_state.auth_user["username"], "logout")
-        st.session_state.auth_user = None
-        st.session_state.messages = []
-        st.rerun()
-
-    if st.session_state.auth_user["role"] == "admin":
-        with st.expander("➕ Add user (admin)"):
-            new_username = st.text_input("New username", key="admin_new_username")
-            new_password = st.text_input("New password", type="password", key="admin_new_password")
-            new_role = st.selectbox("Role", ["user", "admin"], key="admin_new_role")
-            if st.button("Create account", key="admin_create_btn"):
-                if not new_username.strip() or len(new_password) < 8:
-                    st.error("Username required, password must be 8+ characters.")
-                else:
-                    ok = auth_db.create_user(new_username.strip(), new_password, role=new_role)
-                    if ok:
-                        st.success(f"Created user '{new_username}'.")
-                        auth_db.log_action(
-                            st.session_state.auth_user["username"],
-                            "user_created",
-                            detail=f"created '{new_username}' with role '{new_role}'",
-                        )
-                    else:
-                        st.error("That username already exists.")
-
     st.markdown("---")
 
     # Ollama status
@@ -455,8 +356,10 @@ with st.sidebar:
 
     # Load default patients.xlsx if exists
     if not st.session_state.file_loaded:
-        if config.DEFAULT_DATA_PATH.exists():
-            df_dict = load_data(config.DEFAULT_DATA_PATH)
+        import os
+        default_path = os.path.join(os.path.dirname(__file__), "data", "patients.xlsx")
+        if os.path.exists(default_path):
+            df_dict = load_data(default_path)
             st.session_state.df_dict = df_dict
             st.session_state.file_loaded = True
             st.caption("↑ Using default patients.xlsx")
@@ -657,13 +560,6 @@ if send and question and question.strip():
             answer = "⚠️ **Ollama went offline.** Please restart with `ollama serve`."
         elif answer == "TIMEOUT":
             answer = "⚠️ **Timeout.** The model is taking too long — try a shorter question."
-
-        outcome = "error" if isinstance(answer, str) and answer.startswith(("⚠️", "ERROR")) else "success"
-        auth_db.log_action(
-            st.session_state.auth_user["username"],
-            "query",
-            detail=f"[{outcome}] {question}",
-        )
 
         st.session_state.messages.append({"role": "assistant", "content": answer})
         st.rerun()

@@ -1,12 +1,10 @@
 import json
-import logging
 import requests
 import pandas as pd
 from difflib import get_close_matches
 
-import config
-
-logger = logging.getLogger(__name__)
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODEL = "llama3"
 
 SYSTEM_PROMPT = """You are MedAgent. Return ONLY JSON.
 
@@ -74,7 +72,7 @@ Return ONLY valid JSON.
 """
 
     payload = {
-        "model": config.OLLAMA_MODEL,
+        "model": MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": planner_prompt + f"\n\nUser Question: {question}"}
@@ -87,12 +85,12 @@ Return ONLY valid JSON.
         }
     }
 
-    response = requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=config.OLLAMA_TIMEOUT)
+    response = requests.post(OLLAMA_URL, json=payload, timeout=60)
     response.raise_for_status()
 
     content = response.json()["message"]["content"]
-    logger.debug("Raw LLM response: %s", content)
-
+    print("RAW LLM RESPONSE:")
+    print(content)
 
     content = content.replace("```json", "").replace("```", "").strip()
     return json.loads(content)
@@ -102,14 +100,14 @@ Return ONLY valid JSON.
 # FUZZY STRING MATCH HELPER
 # --------------------------------------------------
 
-def fuzzy_filter(series, search_val, cutoff=config.FUZZY_MATCH_CUTOFF):
+def fuzzy_filter(series, search_val, cutoff=0.75):
     normalized = series.astype(str).str.lower().str.strip()
     search_val = str(search_val).lower().strip()
     unique_vals = normalized.unique().tolist()
     close = get_close_matches(search_val, unique_vals, n=1, cutoff=cutoff)
     match_val = close[0] if close else search_val
     if close and close[0] != search_val:
-        logger.debug("Fuzzy match: '%s' -> '%s'", search_val, close[0])
+        print(f"  [fuzzy] '{search_val}' matched to '{close[0]}'")
     return normalized == match_val
 
 
@@ -147,7 +145,7 @@ def execute_query_plan(df_dict, plan):
                 continue
             needed = [c for c in missing_cols if c in other_df.columns]
             if needed:
-                logger.debug("Joining columns %s from sheet '%s'", needed, other_name)
+                print(f"  [join] Pulling {needed} from '{other_name}'")
                 result = result.merge(
                     other_df[["Patient ID"] + needed],
                     on="Patient ID",
@@ -170,7 +168,7 @@ def execute_query_plan(df_dict, plan):
 
     for col, value in filters.items():
         if col not in result.columns:
-            logger.warning("Filter column '%s' not found, skipping", col)
+            print(f"  [warn] Filter column '{col}' not found, skipping")
             continue
 
         if isinstance(value, dict):
@@ -215,7 +213,7 @@ def execute_query_plan(df_dict, plan):
                 result[col] = pd.to_numeric(result[col], errors="coerce")
                 valid_rank_cols.append(col)
             else:
-                logger.warning("Rank column '%s' not found, skipping", col)
+                print(f"  [warn] Rank column '{col}' not found, skipping")
 
         if valid_rank_cols:
             score = pd.Series(0.0, index=result.index)
@@ -228,7 +226,7 @@ def execute_query_plan(df_dict, plan):
             result = result.copy()
             result["Health Risk Score"] = score.round(2)
             result = result.sort_values("Health Risk Score", ascending=ascending)
-            logger.debug("Sorted by score (%s) using %s", rank_order, valid_rank_cols)
+            print(f"  [rank] Sorted by score ({rank_order}) using {valid_rank_cols}")
 
     # --------------------------------------------------
     # SELECT COLUMNS — after ranking so score column is included
@@ -248,7 +246,7 @@ def execute_query_plan(df_dict, plan):
     # LIMIT ROWS — always last
     # --------------------------------------------------
 
-    limit = plan.get("limit", config.DEFAULT_QUERY_LIMIT)
+    limit = plan.get("limit", 20)
     result = result.head(limit)
 
     return result
@@ -265,7 +263,8 @@ def run_agent(df_dict: dict, question: str):
 
     try:
         plan = generate_query_plan(df_dict, question)
-        logger.debug("QUERY PLAN: %s", plan)
+        print("QUERY PLAN:")
+        print(plan)
 
         result_df = execute_query_plan(df_dict, plan)
 
@@ -279,20 +278,13 @@ def run_agent(df_dict: dict, question: str):
         }
 
     except requests.exceptions.ConnectionError:
-        logger.warning("Ollama connection failed")
         return "OLLAMA_OFFLINE"
     except requests.exceptions.Timeout:
-        logger.warning("Ollama request timed out")
         return "TIMEOUT"
     except json.JSONDecodeError:
-        logger.warning("LLM returned invalid JSON for question: %s", question)
         return "AI returned invalid JSON. Try rewording the question."
-    except KeyError as e:
-        logger.exception("Query plan missing expected field")
-        return "The AI's query plan was malformed. Try rewording the question."
-    except Exception:
-        logger.exception("Unhandled error in run_agent for question: %s", question)
-        return "Something went wrong processing that question. Please try again."
+    except Exception as e:
+        return f"ERROR: {str(e)}"
 
 
 # --------------------------------------------------
@@ -302,7 +294,7 @@ def run_agent(df_dict: dict, question: str):
 def check_ollama_status() -> dict:
 
     try:
-        r = requests.get(config.OLLAMA_TAGS_URL, timeout=config.OLLAMA_STATUS_TIMEOUT)
+        r = requests.get("http://localhost:11434/api/tags", timeout=5)
         r.raise_for_status()
         models = [m["name"] for m in r.json().get("models", [])]
         return {"online": True, "models": models}
