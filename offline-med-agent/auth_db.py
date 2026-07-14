@@ -12,7 +12,7 @@ import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 
@@ -48,6 +48,15 @@ def init_db():
             conn.execute("ALTER TABLE users ADD COLUMN recovery_salt TEXT")
         if "recovery_code_hash" not in existing_cols:
             conn.execute("ALTER TABLE users ADD COLUMN recovery_code_hash TEXT")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS remember_tokens (
+                token_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,6 +137,7 @@ def reset_password_with_recovery(username: str, recovery_code: str, new_password
             "UPDATE users SET salt = ?, password_hash = ? WHERE username = ?",
             (new_salt.hex(), new_hash, username),
         )
+    revoke_all_tokens_for_user(username)
     logger.info("Password reset via recovery code for user '%s'", username)
     return True
 
@@ -141,6 +151,8 @@ def admin_reset_password(target_username: str, new_password: str) -> bool:
             "UPDATE users SET salt = ?, password_hash = ? WHERE username = ?",
             (new_salt.hex(), new_hash, target_username),
         )
+    if cur.rowcount > 0:
+        revoke_all_tokens_for_user(target_username)
     return cur.rowcount > 0
 
 
@@ -150,6 +162,73 @@ def list_users():
             "SELECT username, role, created_at FROM users ORDER BY username"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────
+# Remember-me tokens
+# ─────────────────────────────────────────────────────────────
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_remember_token(username: str, days_valid: int = 30) -> str:
+    """Generates a new remember-me token, stores its hash, returns the raw token (put in a cookie)."""
+    token = secrets.token_urlsafe(32)
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(days=days_valid)).isoformat()
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO remember_tokens (token_hash, username, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (token_hash, username, expires_at, now.isoformat()),
+        )
+    return token
+
+
+def validate_remember_token(token: str):
+    """Returns {'username', 'role'} if the token is valid and unexpired, else None."""
+    if not token:
+        return None
+
+    token_hash = _hash_token(token)
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT username, expires_at FROM remember_tokens WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    if datetime.fromisoformat(row["expires_at"]) < datetime.now(timezone.utc):
+        revoke_remember_token(token)
+        return None
+
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT username, role FROM users WHERE username = ?", (row["username"],)
+        ).fetchone()
+
+    if user_row is None:
+        return None
+    return {"username": user_row["username"], "role": user_row["role"]}
+
+
+def revoke_remember_token(token: str):
+    if not token:
+        return
+    with get_connection() as conn:
+        conn.execute("DELETE FROM remember_tokens WHERE token_hash = ?", (_hash_token(token),))
+
+
+def revoke_all_tokens_for_user(username: str):
+    """Call this on password change so old remember-me cookies stop working."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM remember_tokens WHERE username = ?", (username,))
+    logger.info("Revoked all remember-me tokens for '%s'", username)
 
 
 def has_recovery_code(username: str) -> bool:

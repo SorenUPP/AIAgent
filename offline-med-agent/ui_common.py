@@ -9,7 +9,9 @@ Every page (app.py and everything in pages/) should start with:
     ollama_status = ui_common.render_sidebar()
 """
 import logging
+from datetime import datetime, timedelta, timezone
 import streamlit as st
+import extra_streamlit_components as stx
 
 import config
 import auth_db
@@ -17,6 +19,15 @@ from data_loader import load_data, get_quick_stats
 from agent import check_ollama_status
 
 logger = logging.getLogger(__name__)
+
+REMEMBER_COOKIE_NAME = "medagent_remember_token"
+
+
+def get_cookie_manager():
+    """One CookieManager instance per browser session, reused across reruns/pages."""
+    if "cookie_manager" not in st.session_state:
+        st.session_state.cookie_manager = stx.CookieManager(key="medagent_cookie_manager")
+    return st.session_state.cookie_manager
 
 
 # ─────────────────────────────────────────────────────────────
@@ -183,6 +194,18 @@ def require_login():
     if st.session_state.auth_user:
         return  # already logged in
 
+    # Try silent auto-login from a remember-me cookie before showing any form.
+    if "_remember_check_done" not in st.session_state:
+        cookie_manager = get_cookie_manager()
+        token = cookie_manager.get(REMEMBER_COOKIE_NAME)
+        st.session_state["_remember_check_done"] = True
+        if token:
+            user = auth_db.validate_remember_token(token)
+            if user:
+                st.session_state.auth_user = user
+                auth_db.log_action(user["username"], "login", detail="via remember-me cookie")
+                st.rerun()
+
     if auth_db.user_count() == 0:
         _first_run_setup()
         return
@@ -195,6 +218,7 @@ def require_login():
         with st.form("login_form"):
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
+            remember_me = st.checkbox("Remember me on this device (30 days)")
             submitted = st.form_submit_button("Sign in", use_container_width=True)
 
         if submitted:
@@ -203,6 +227,15 @@ def require_login():
             if user:
                 st.session_state.auth_user = user
                 auth_db.log_action(user["username"], "login")
+
+                if remember_me:
+                    token = auth_db.create_remember_token(user["username"], days_valid=30)
+                    expires = datetime.now(timezone.utc) + timedelta(days=30)
+                    get_cookie_manager().set(
+                        REMEMBER_COOKIE_NAME, token,
+                        expires_at=expires, key="set_remember_cookie",
+                    )
+
                 st.toast(f"Welcome back, {user['username']}!", icon="✅")
                 st.rerun()
             else:
@@ -308,8 +341,13 @@ def render_sidebar():
                    f"({st.session_state.auth_user['role']})")
         if st.button("🔒 Log out"):
             auth_db.log_action(st.session_state.auth_user["username"], "logout")
+            token = get_cookie_manager().get(REMEMBER_COOKIE_NAME)
+            if token:
+                auth_db.revoke_remember_token(token)
+                get_cookie_manager().delete(REMEMBER_COOKIE_NAME, key="delete_remember_cookie")
             st.session_state.auth_user = None
             st.session_state.messages = []
+            st.session_state["_remember_check_done"] = False
             st.rerun()
 
         with st.expander("🔑 My recovery code"):
