@@ -10,17 +10,15 @@ ui_common.require_login()
 ui_common.render_sidebar()
 
 st.markdown("""
-<div class="medagent-header">
-  <div class="medagent-logo">📋</div>
-  <div>
-    <div class="medagent-title">Audit Log</div>
-    <div class="medagent-sub">Login, query, and account activity across MedAgent</div>
-  </div>
+<div class="page-header">
+  <div class="page-eyebrow">Compliance</div>
+  <div class="page-title">Audit Log</div>
+  <div class="page-sub">Login, query, and account activity across MedAgent</div>
 </div>
 """, unsafe_allow_html=True)
 
 if st.session_state.auth_user["role"] != "admin":
-    st.error("🔒 This page is restricted to admins.")
+    st.error("This page is restricted to admins.")
     st.stop()
 
 # --------------------------------------------------
@@ -92,7 +90,7 @@ else:
 
     csv = display_df.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "⬇ Export filtered log as CSV",
+        "Export filtered log as CSV",
         data=csv,
         file_name="medagent_audit_log.csv",
         mime="text/csv",
