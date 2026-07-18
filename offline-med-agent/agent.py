@@ -1,5 +1,6 @@
 import json
 import logging
+import warnings
 import requests
 import pandas as pd
 from difflib import get_close_matches
@@ -111,13 +112,19 @@ def build_schema_context(df_dict):
         lines.append(f"\nSheet: {sheet_name}")
         lines.append("Columns: " + ", ".join(df.columns.tolist()))
         for col in df.columns:
-            if df[col].dtype == object:
+            # pandas 3.0 made text columns default to a native "string" dtype
+            # instead of "object" — `dtype == object` alone misses those, so
+            # every text column silently lost its value hints. Catch both.
+            is_textlike = pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col])
+            if is_textlike and not pd.api.types.is_numeric_dtype(df[col]):
                 uniques = df[col].dropna().unique().tolist()
                 if len(uniques) <= 25:
                     lines.append(f"  '{col}' possible values: {uniques}")
                 else:
                     lines.append(f"  '{col}' sample values: {uniques[:5]}")
-                parsed = pd.to_datetime(df[col], errors="coerce")
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    parsed = pd.to_datetime(df[col], errors="coerce")
                 if len(df) > 0 and parsed.notna().mean() > 0.8:
                     lines.append(f"  '{col}' looks like a DATE column (usable for trend queries)")
     return "\n".join(lines)
@@ -568,6 +575,24 @@ def run_agent(df_dict: dict, question: str):
     except requests.exceptions.Timeout:
         logger.warning("Ollama request timed out")
         return "TIMEOUT"
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        body_snippet = ""
+        try:
+            body_snippet = e.response.text[:300] if e.response is not None else ""
+        except Exception:
+            pass
+        logger.error("Ollama returned HTTP %s for question '%s': %s", status, question, body_snippet)
+        if status == 404:
+            return (
+                f"⚠️ Ollama returned 404 — the model '{config.OLLAMA_MODEL}' isn't available. "
+                f"Run `ollama pull {config.OLLAMA_MODEL}` (or set OLLAMA_MODEL to a model you've "
+                f"already pulled) and try again."
+            )
+        return f"⚠️ Ollama returned an error (HTTP {status}). Check the Ollama server logs for details."
+    except requests.exceptions.RequestException as e:
+        logger.exception("Unhandled network error talking to Ollama for question: %s", question)
+        return f"⚠️ Couldn't reach Ollama: {e}"
     except (json.JSONDecodeError, PlanValidationError) as e:
         logger.warning("LLM plan rejected after retries for question '%s': %s", question, e)
         return "AI returned an invalid query plan. Try rewording the question."

@@ -6,6 +6,10 @@ from tools import (
     get_flag_counts, get_diagnosis_counts, get_age_distribution,
     compute_patient_risk_scores, detect_lab_anomalies,
 )
+
+st.set_page_config(page_title="MedAgent — Dashboard", page_icon="📊", layout="wide")
+ui_common.bootstrap()
+ui_common.require_login()
 ui_common.render_sidebar()
 
 st.markdown("""
@@ -70,7 +74,8 @@ st.subheader("Top At-Risk Patients")
 st.caption("Deterministic score based on Abnormal/Borderline lab flag counts — "
            "not AI-generated, fully reproducible.")
 
-risk_df = compute_patient_risk_scores(df_dict)
+with st.spinner("Computing risk scores..."):
+    risk_df = compute_patient_risk_scores(df_dict)
 if not risk_df.empty:
     display_cols = [c for c in ["Patient ID", "First Name", "Last Name",
                                  "Risk_Tier", "Risk_Score_Normalized",
@@ -90,7 +95,8 @@ st.subheader("Statistical Outliers")
 st.caption("Lab values more than 2.5 standard deviations from the dataset average — "
            "unusual relative to this population, not a clinical diagnosis.")
 
-anomalies_df = detect_lab_anomalies(df_dict)
+with st.spinner("Scanning for statistical outliers..."):
+    anomalies_df = detect_lab_anomalies(df_dict)
 if not anomalies_df.empty:
     st.dataframe(anomalies_df.head(25), use_container_width=True, hide_index=True)
 else:

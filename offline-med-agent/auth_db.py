@@ -66,6 +66,13 @@ def init_db():
                 timestamp TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS failed_logins (
+                username TEXT PRIMARY KEY,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                locked_until TEXT
+            )
+        """)
 
 
 def _hash_password(password: str, salt: bytes) -> str:
@@ -259,8 +266,49 @@ def regenerate_recovery_code(username: str):
     logger.info("Recovery code regenerated for user '%s'", username)
     return recovery_code
 
+def get_lockout_status(username: str):
+    """Returns a timezone-aware datetime the account is locked until, or None if not locked."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT locked_until FROM failed_logins WHERE username = ?", (username,)
+        ).fetchone()
+    if row is None or not row["locked_until"]:
+        return None
+    locked_until = datetime.fromisoformat(row["locked_until"])
+    if locked_until <= datetime.now(timezone.utc):
+        return None
+    return locked_until
+
+
+def register_failed_login(username: str):
+    """Increments the failure counter for a username and locks it out if the threshold is hit."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT attempt_count FROM failed_logins WHERE username = ?", (username,)
+        ).fetchone()
+        count = (row["attempt_count"] if row else 0) + 1
+        locked_until = None
+        if count >= config.MAX_FAILED_LOGIN_ATTEMPTS:
+            locked_until = (
+                datetime.now(timezone.utc) + timedelta(minutes=config.LOGIN_LOCKOUT_MINUTES)
+            ).isoformat()
+            logger.warning("Account '%s' locked out after %d failed attempts", username, count)
+        conn.execute(
+            "INSERT INTO failed_logins (username, attempt_count, locked_until) VALUES (?, ?, ?) "
+            "ON CONFLICT(username) DO UPDATE SET attempt_count = ?, locked_until = ?",
+            (username, count, locked_until, count, locked_until),
+        )
+
+
+def clear_failed_logins(username: str):
+    """Resets the failure counter for a username, e.g. after a successful login."""
+    with get_connection() as conn:
+        conn.execute("DELETE FROM failed_logins WHERE username = ?", (username,))
+
+
 def verify_credentials(username: str, password: str):
     """Returns the user row (as dict) on success, None on failure."""
+    username = (username or "").strip()
     with get_connection() as conn:
         row = conn.execute(
             "SELECT username, salt, password_hash, role FROM users WHERE username = ?",

@@ -12,7 +12,7 @@ pip install -r requirements.txt
 ollama serve
 
 # 3. Pull the LLM model
-ollama pull llama3
+ollama pull qwen2.5:14b-instruct
 
 # 4. Run the app
 streamlit run app.py
@@ -45,8 +45,9 @@ streamlit run app.py
 - *"Average cholesterol across all patients?"*
 
 ## Changing the model
-
-Edit `agent.py` line 6:
+Set `OLLAMA_MODEL` in your `.env` file (copy `.env.example` to `.env` first),
+or edit the default directly in `config.py`:
 ```python
-MODEL = "llama3"   # change to "mistral", "phi3", "gemma", etc.
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")   # change to "llama3", "mistral", "phi3", etc.
 ```
+Whatever model you set here must be pulled locally first: `ollama pull <model-name>`.

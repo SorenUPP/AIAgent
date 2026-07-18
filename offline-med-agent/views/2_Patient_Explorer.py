@@ -48,7 +48,8 @@ if "Patient ID" in filtered.columns and not filtered.empty:
     selected_id = st.selectbox("Select a Patient ID", filtered["Patient ID"].tolist())
 
     if selected_id:
-        risk_df = compute_patient_risk_scores(df_dict)
+        with st.spinner("Loading patient profile..."):
+            risk_df = compute_patient_risk_scores(df_dict)
         if not risk_df.empty:
             patient_risk = risk_df[risk_df["Patient ID"] == selected_id]
             if not patient_risk.empty:

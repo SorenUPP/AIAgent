@@ -31,26 +31,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- message renderer (reused for both archived + current) ----------
-def render_block(content):
+def render_block(content, key_prefix="block"):
     """Renders one result block (table/metric/chart/string), no chat_message wrapper."""
     if isinstance(content, dict):
         ctype = content.get("type")
         if ctype == "table":
             st.subheader(content["title"])
             st.dataframe(content["data"], use_container_width=True, hide_index=True)
+            csv = content["data"].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇ Export as CSV", data=csv, file_name="medagent_query_result.csv",
+                mime="text/csv", key=f"{key_prefix}_export",
+            )
         elif ctype == "metric":
             st.metric(content["label"], content["value"])
         elif ctype == "chart":
             st.subheader(content.get("title", "Trend"))
             chart_df = content["data"].set_index(content["x"])
             st.line_chart(chart_df[[content["y"]]])
+            csv = content["data"].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇ Export as CSV", data=csv, file_name="medagent_trend_result.csv",
+                mime="text/csv", key=f"{key_prefix}_export",
+            )
         else:
             st.write(content)
     else:
         st.markdown(html.escape(str(content)))
 
 
-def render_message(msg):
+def render_message(msg, msg_index):
     role = msg["role"]
     content = msg["content"]
     avatar = "🧑‍⚕️" if role == "user" else "🩺"
@@ -59,10 +69,10 @@ def render_message(msg):
             st.subheader(content["title"])
             for i, block in enumerate(content["results"], start=1):
                 st.markdown(f"**Step {i}:**")
-                render_block(block)
+                render_block(block, key_prefix=f"msg{msg_index}_step{i}")
                 st.divider()
         else:
-            render_block(content)
+            render_block(content, key_prefix=f"msg{msg_index}")
 
 # --- split into archived vs current exchange -------------------------
 messages = st.session_state.messages
@@ -98,12 +108,12 @@ div.history-tab-marker + div[data-testid="stPopover"] > button {
 if archived:
     with st.popover(f"◂ History ({len(archived)})"):
         st.caption("Earlier in this conversation")
-        for msg in archived:
-            render_message(msg)
+        for i, msg in enumerate(archived):
+            render_message(msg, msg_index=f"archived{i}")
 
 # --- current exchange, always visible --------------------------------
-for msg in current:
-    render_message(msg)
+for i, msg in enumerate(current):
+    render_message(msg, msg_index=f"current{i}")
 
 # --- suggestion chips (only before first message) --------------------
 if not st.session_state.messages and st.session_state.file_loaded:
@@ -148,7 +158,10 @@ if question and question.strip():
         elif answer == "TIMEOUT":
             answer = "**Timeout.** The model is taking too long — try a shorter question."
 
-        outcome = "error" if isinstance(answer, str) and answer.startswith(("!", "ERROR")) else "success"
+        is_error = isinstance(answer, str) and (
+            answer.startswith(("!", "ERROR", "⚠️", "**Ollama", "**Timeout"))
+        )
+        outcome = "error" if is_error else "success"
         auth_db.log_action(st.session_state.auth_user["username"], "query", detail=f"[{outcome}] {question}")
 
         st.session_state.messages.append({"role": "assistant", "content": answer})

@@ -9,6 +9,7 @@ Every page (app.py and everything in pages/) should start with:
     ollama_status = ui_common.render_sidebar()
 """
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 import extra_streamlit_components as stx
@@ -61,6 +62,12 @@ def _init_session_state():
         st.session_state.df_dict = {}
     if "file_loaded" not in st.session_state:
         st.session_state.file_loaded = False
+    if "using_custom_data" not in st.session_state:
+        st.session_state.using_custom_data = False
+    if "data_source_name" not in st.session_state:
+        st.session_state.data_source_name = None
+    if "uploader_version" not in st.session_state:
+        st.session_state.uploader_version = 0
     if "auth_user" not in st.session_state:
         st.session_state.auth_user = None
     if "_auth_mode" not in st.session_state:
@@ -333,21 +340,35 @@ def _render_auth_forms():
             submitted = st.form_submit_button("Sign in", use_container_width=True)
 
         if submitted:
-            with st.spinner("Checking credentials..."):
-                user = auth_db.verify_credentials(username, password)
-            if user:
-                st.session_state.auth_user = user
-                auth_db.log_action(user["username"], "login")
+            clean_username = (username or "").strip()
+            lockout = auth_db.get_lockout_status(clean_username) if clean_username else None
 
-                if remember_me:
-                    token = auth_db.create_remember_token(user["username"], days_valid=30)
-                    config.SESSION_FILE.write_text(token, encoding="utf-8")
-
-                st.toast(f"Welcome back, {user['username']}!", icon="✅")
-                st.rerun()
+            if lockout:
+                wait_min = max(1, int((lockout - datetime.now(timezone.utc)).total_seconds() // 60) + 1)
+                st.error(f"Too many failed attempts. Try again in about {wait_min} minute(s).")
             else:
-                auth_db.log_action(username or "(unknown)", "login_failed")
-                st.error("Invalid username or password.")
+                with st.spinner("Checking credentials..."):
+                    user = auth_db.verify_credentials(clean_username, password)
+                if user:
+                    auth_db.clear_failed_logins(user["username"])
+                    st.session_state.auth_user = user
+                    auth_db.log_action(user["username"], "login")
+
+                    if remember_me:
+                        token = auth_db.create_remember_token(user["username"], days_valid=30)
+                        config.SESSION_FILE.write_text(token, encoding="utf-8")
+                        try:
+                            os.chmod(config.SESSION_FILE, 0o600)
+                        except OSError:
+                            pass
+
+                    st.toast(f"Welcome back, {user['username']}!", icon="✅")
+                    st.rerun()
+                else:
+                    if clean_username:
+                        auth_db.register_failed_login(clean_username)
+                    auth_db.log_action(clean_username or "(unknown)", "login_failed")
+                    st.error("Invalid username or password.")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -440,6 +461,14 @@ def _render_auth_forms():
 # Sidebar (shared across all pages)
 # ─────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=5, show_spinner=False)
+def _cached_ollama_status():
+    """Streamlit reruns the whole script on every widget interaction, so without
+    caching this fires a real HTTP request to Ollama on every click. A 5s TTL
+    keeps the sidebar status honest while cutting that down drastically."""
+    return check_ollama_status()
+
+
 def render_sidebar():
     """Renders the full sidebar. Returns the Ollama status dict for pages that need it."""
     with st.sidebar:
@@ -519,8 +548,9 @@ def render_sidebar():
 
             with st.expander("Regenerate a user's recovery code (admin)"):
                 existing_users_rc = [u["username"] for u in auth_db.list_users()]
-                target_user_rc = st.selectbox("User", existing_users_rc, key="admin_regen_target")
-                if st.session_state.get("_admin_regen_code"):
+                if not existing_users_rc:
+                    st.caption("No users yet.")
+                elif st.session_state.get("_admin_regen_code"):
                     st.warning(f"New code for '{st.session_state['_admin_regen_username']}' — won't be shown again:")
                     st.code(st.session_state["_admin_regen_code"], language=None)
                     if st.button("Done", key="admin_regen_ack"):
@@ -528,6 +558,7 @@ def render_sidebar():
                         del st.session_state["_admin_regen_username"]
                         st.rerun()
                 else:
+                    target_user_rc = st.selectbox("User", existing_users_rc, key="admin_regen_target")
                     if st.button("Generate new recovery code", key="admin_regen_btn"):
                         new_code = auth_db.regenerate_recovery_code(target_user_rc)
                         auth_db.log_action(
@@ -540,24 +571,27 @@ def render_sidebar():
 
             with st.expander("Reset a user's password (admin)"):
                 existing_users = [u["username"] for u in auth_db.list_users()]
-                target_user = st.selectbox("User", existing_users, key="admin_reset_target")
-                reset_password_val = st.text_input("New password", type="password", key="admin_reset_password")
-                if st.button("Reset password", key="admin_reset_btn"):
-                    if len(reset_password_val) < 8:
-                        st.error("Password must be at least 8 characters.")
-                    else:
-                        if auth_db.admin_reset_password(target_user, reset_password_val):
-                            auth_db.log_action(
-                                st.session_state.auth_user["username"], "admin_password_reset",
-                                detail=f"reset password for '{target_user}'",
-                            )
-                            st.success(f"Password reset for '{target_user}'.")
+                if not existing_users:
+                    st.caption("No users yet.")
+                else:
+                    target_user = st.selectbox("User", existing_users, key="admin_reset_target")
+                    reset_password_val = st.text_input("New password", type="password", key="admin_reset_password")
+                    if st.button("Reset password", key="admin_reset_btn"):
+                        if len(reset_password_val) < 8:
+                            st.error("Password must be at least 8 characters.")
                         else:
-                            st.error("User not found.")
+                            if auth_db.admin_reset_password(target_user, reset_password_val):
+                                auth_db.log_action(
+                                    st.session_state.auth_user["username"], "admin_password_reset",
+                                    detail=f"reset password for '{target_user}'",
+                                )
+                                st.success(f"Password reset for '{target_user}'.")
+                            else:
+                                st.error("User not found.")
 
         st.markdown("---")
 
-        ollama = check_ollama_status()
+        ollama = _cached_ollama_status()
         if ollama["online"]:
             st.markdown('<span class="status-badge online">OLLAMA · ONLINE</span>', unsafe_allow_html=True)
             if ollama["models"]:
@@ -570,7 +604,7 @@ def render_sidebar():
         st.markdown("### Load Data")
         uploaded = st.file_uploader(
             "Upload Excel (.xlsx)", type=["xlsx"], label_visibility="collapsed",
-            key="sidebar_file_uploader",
+            key=f"sidebar_file_uploader_{st.session_state.uploader_version}",
         )
 
         if uploaded:
@@ -578,21 +612,39 @@ def render_sidebar():
                 df_dict = load_data(uploaded)
                 st.session_state.df_dict = df_dict
                 st.session_state.file_loaded = True
+                st.session_state.using_custom_data = True
+                st.session_state.data_source_name = uploaded.name
                 st.session_state.messages = []
-            st.success(f"Loaded {len(df_dict)} sheets")
+            st.success(f"Loaded {len(df_dict)} sheets from '{uploaded.name}'")
 
         if not st.session_state.file_loaded:
             if config.DEFAULT_DATA_PATH.exists():
-                df_dict = load_data(config.DEFAULT_DATA_PATH)
-                st.session_state.df_dict = df_dict
-                st.session_state.file_loaded = True
-                st.caption("↑ Using default patients.xlsx")
+                with st.spinner("Loading default dataset..."):
+                    df_dict = load_data(config.DEFAULT_DATA_PATH)
+                    st.session_state.df_dict = df_dict
+                    st.session_state.file_loaded = True
+                    st.session_state.data_source_name = config.DEFAULT_DATA_PATH.name
+
+        if st.session_state.file_loaded:
+            source_label = st.session_state.data_source_name or "unknown"
+            if st.session_state.using_custom_data:
+                st.caption(f"↑ Using uploaded file: **{source_label}**")
+                if st.button("↺ Reset to default data", key="reset_to_default_btn", use_container_width=True):
+                    st.session_state.uploader_version += 1  # remounts the uploader, clearing its selection
+                    st.session_state.file_loaded = False
+                    st.session_state.using_custom_data = False
+                    st.session_state.df_dict = {}
+                    st.session_state.data_source_name = None
+                    st.session_state.messages = []
+                    st.rerun()
+            else:
+                st.caption(f"↑ Using default dataset: **{source_label}**")
 
         st.markdown("---")
 
         if st.session_state.file_loaded and st.session_state.df_dict:
             stats = get_quick_stats(st.session_state.df_dict)
-            st.markdown("###Sheets")
+            st.markdown("### Sheets")
             for sheet, info in stats.items():
                 with st.expander(f"{sheet} ({info['rows']} rows)"):
                     st.caption(f"**Columns:** {', '.join(info['columns'])}")
