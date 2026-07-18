@@ -89,14 +89,14 @@ echo  [4/5] Downloading AI model (llama3 ~4GB)...
 echo  This only happens once and may take several minutes.
 echo  depending on your internet speed.
 echo.
-ollama pull llama3 >> "%LOG%" 2>&1
+ollama pull qwen2.5:14b-instruct >> "%LOG%" 2>&1
 if %errorLevel% neq 0 (
-    echo  [WARN] Could not pull llama3 automatically.
-    echo  You can do it later by running: ollama pull llama3
+    echo  [WARN] Could not pull qwen2.5:14b-instruct automatically.
+    echo  You can do it later by running: ollama pull qwen2.5:14b-instruct
     echo  Ollama pull failed >> "%LOG%"
 ) else (
     echo  Model ready.
-    echo  llama3 pulled OK >> "%LOG%"
+    echo  qwen2.5:14b-instruct pulled OK >> "%LOG%"
 )
 
 echo.

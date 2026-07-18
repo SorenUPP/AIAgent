@@ -295,17 +295,22 @@ def require_login():
     if st.session_state.auth_user:
         return  # already logged in
 
-    # Try silent auto-login from a remember-me cookie before showing any form.
+    # Try silent auto-login from a locally-saved session file before showing
+    # any form. This is a desktop app on one machine for one user, so we
+    # persist the remember-me token to disk instead of a browser cookie --
+    # no dependency on browser settings, SameSite policy, or which browser
+    # the .bat happens to open.
     if "_remember_check_done" not in st.session_state:
-        cookie_manager = get_cookie_manager()
-        token = cookie_manager.get(REMEMBER_COOKIE_NAME)
         st.session_state["_remember_check_done"] = True
-        if token:
-            user = auth_db.validate_remember_token(token)
+        if config.SESSION_FILE.exists():
+            token = config.SESSION_FILE.read_text(encoding="utf-8").strip()
+            user = auth_db.validate_remember_token(token) if token else None
             if user:
                 st.session_state.auth_user = user
-                auth_db.log_action(user["username"], "login", detail="via remember-me cookie")
+                auth_db.log_action(user["username"], "login", detail="via saved session")
                 st.rerun()
+            else:
+                config.SESSION_FILE.unlink(missing_ok=True)  
 
     if auth_db.user_count() == 0:
         _first_run_setup()
@@ -336,11 +341,7 @@ def _render_auth_forms():
 
                 if remember_me:
                     token = auth_db.create_remember_token(user["username"], days_valid=30)
-                    expires = datetime.now(timezone.utc) + timedelta(days=30)
-                    get_cookie_manager().set(
-                        REMEMBER_COOKIE_NAME, token,
-                        expires_at=expires, key="set_remember_cookie",
-                    )
+                    config.SESSION_FILE.write_text(token, encoding="utf-8")
 
                 st.toast(f"Welcome back, {user['username']}!", icon="✅")
                 st.rerun()

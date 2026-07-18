@@ -19,8 +19,8 @@ BASE_DIR = Path(__file__).resolve().parent
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_CHAT_URL = f"{OLLAMA_HOST}/api/chat"
 OLLAMA_TAGS_URL = f"{OLLAMA_HOST}/api/tags"
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "60"))
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b-instruct")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120")) 
 OLLAMA_STATUS_TIMEOUT = int(os.getenv("OLLAMA_STATUS_TIMEOUT", "5"))
 
 # --- Data ---
@@ -35,5 +35,6 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 # --- Auth / Audit ---
 # Separate from patient data on purpose — this only holds accounts + the audit trail.
 APP_DB_PATH = BASE_DIR / "data" / "medagent_app.db"
+SESSION_FILE = BASE_DIR / "data" / ".session_token"
 PBKDF2_ITERATIONS = int(os.getenv("PBKDF2_ITERATIONS", "260000"))
 SESSION_IDLE_HINT_MIN = int(os.getenv("SESSION_IDLE_HINT_MIN", "60"))  # informational only, see note below

@@ -31,26 +31,38 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- message renderer (reused for both archived + current) ----------
+def render_block(content):
+    """Renders one result block (table/metric/chart/string), no chat_message wrapper."""
+    if isinstance(content, dict):
+        ctype = content.get("type")
+        if ctype == "table":
+            st.subheader(content["title"])
+            st.dataframe(content["data"], use_container_width=True, hide_index=True)
+        elif ctype == "metric":
+            st.metric(content["label"], content["value"])
+        elif ctype == "chart":
+            st.subheader(content.get("title", "Trend"))
+            chart_df = content["data"].set_index(content["x"])
+            st.line_chart(chart_df[[content["y"]]])
+        else:
+            st.write(content)
+    else:
+        st.markdown(html.escape(str(content)))
+
+
 def render_message(msg):
     role = msg["role"]
     content = msg["content"]
     avatar = "🧑‍⚕️" if role == "user" else "🩺"
     with st.chat_message(role, avatar=avatar):
-        if isinstance(content, dict):
-            ctype = content.get("type")
-            if ctype == "table":
-                st.subheader(content["title"])
-                st.dataframe(content["data"], use_container_width=True, hide_index=True)
-            elif ctype == "metric":
-                st.metric(content["label"], content["value"])
-            elif ctype == "chart":
-                st.subheader(content.get("title", "Trend"))
-                chart_df = content["data"].set_index(content["x"])
-                st.line_chart(chart_df[[content["y"]]])
-            else:
-                st.write(content)
+        if isinstance(content, dict) and content.get("type") == "multi":
+            st.subheader(content["title"])
+            for i, block in enumerate(content["results"], start=1):
+                st.markdown(f"**Step {i}:**")
+                render_block(block)
+                st.divider()
         else:
-            st.markdown(html.escape(str(content)))
+            render_block(content)
 
 # --- split into archived vs current exchange -------------------------
 messages = st.session_state.messages

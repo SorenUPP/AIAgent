@@ -20,7 +20,7 @@ class ExecutionError(Exception):
     """Raised when a structurally valid plan can't be executed (bad column, etc.)."""
 
 
-ALLOWED_MODES = {"lookup", "rank", "aggregate", "group_by", "compare", "trend"}
+ALLOWED_MODES = {"lookup", "rank", "aggregate", "group_by", "compare", "trend", "multi_step"}
 AGG_FUNCS = {"count", "mean", "sum", "min", "max", "median"}
 
 
@@ -71,6 +71,19 @@ Every plan has a "mode". Pick exactly one:
     "date_column": "Visit Date", "trend_column": "BMI",
     "filters": {"Patient ID": "PT-0001"}}
 
+7. "multi_step" — use this when the question has more than one distinct part
+   (e.g. "how many diabetics, and what's their average BMI compared to
+   non-diabetics", or "list the top 5 highest-risk patients, then show me
+   their cholesterol trend"). Break it into 2-4 separate plans, each using
+   modes 1-6 above, and put them in "steps". Each step is executed
+   independently and shown to the user in order.
+   {"mode": "multi_step", "steps": [
+      {"sheet": "Diagnoses", "mode": "aggregate", "agg_func": "count",
+       "filters": {"Diagnosis": "Diabetes"}, "label": "Diabetic patients"},
+      {"sheet": "Lab Results", "mode": "rank", "rank_columns": ["Risk Score"],
+       "rank_order": "desc", "filters": {}, "columns": ["Patient ID"], "limit": 5}
+   ]}
+
 FILTER RULES:
 - filters is ALWAYS a plain object, never a list. Never use "Column" as a key.
 - String filter:  {"City": "Helsingborg"}
@@ -119,10 +132,11 @@ def validate_plan(plan, valid_sheets=None):
         raise PlanValidationError("Plan must be a JSON object.")
 
     sheet = plan.get("sheet")
-    if not sheet or not isinstance(sheet, str):
-        raise PlanValidationError("'sheet' is required and must be a string.")
+    if plan.get("mode") != "multi_step":
+        if not sheet or not isinstance(sheet, str):
+            raise PlanValidationError("'sheet' is required and must be a string.")
 
-    if valid_sheets is not None and sheet not in valid_sheets:
+    if sheet and valid_sheets is not None and sheet not in valid_sheets:
         raise PlanValidationError(
             f"'sheet' must be exactly one of {sorted(valid_sheets)} — got '{sheet}'."
         )
@@ -130,6 +144,16 @@ def validate_plan(plan, valid_sheets=None):
     mode = plan.setdefault("mode", "lookup")
     if mode not in ALLOWED_MODES:
         raise PlanValidationError(f"'mode' must be one of {sorted(ALLOWED_MODES)}, got '{mode}'.")
+
+    if mode == "multi_step":
+        steps = plan.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise PlanValidationError("'steps' must be a non-empty list for mode 'multi_step'.")
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise PlanValidationError(f"Step {i} must be a JSON object.")
+            validate_plan(step, valid_sheets=valid_sheets)
+        return plan  # sub-plans are already fully validated individually
 
     filters = plan.get("filters", {})
     if not isinstance(filters, dict):
@@ -188,7 +212,7 @@ User Question: {question}
             "messages": messages,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0, "num_predict": 400},
+            "options": {"temperature": 0, "num_predict": 800},
         }
         response = requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=config.OLLAMA_TIMEOUT)
         response.raise_for_status()
@@ -465,13 +489,19 @@ def _execute_trend(df, plan):
 # ============================================================
 
 def execute_query_plan(df_dict, plan):
+    mode = plan.get("mode", "lookup")
+
+    if mode == "multi_step":
+        return [
+            {"step_plan": step, "result": execute_query_plan(df_dict, step)}
+            for step in plan["steps"]
+        ]
+
     sheet_name = plan.get("sheet")
     if not sheet_name:
         raise ExecutionError("No sheet specified by AI.")
     if sheet_name not in df_dict:
         raise ExecutionError(f"Sheet '{sheet_name}' not found.")
-
-    mode = plan.get("mode", "lookup")
 
     if mode == "compare":
         return _execute_compare(df_dict, plan)
@@ -496,6 +526,23 @@ def execute_query_plan(df_dict, plan):
 # MAIN AGENT FUNCTION
 # ============================================================
 
+def _format_result(result, plan, question):
+    """Turns a raw execute_query_plan() result into a renderable content dict
+    or a plain-string message. Shared by single-step and multi-step paths."""
+    if isinstance(result, dict):
+        if result.get("type") == "metric" and result.get("value") is None:
+            return f"Couldn't compute that in the '{plan.get('sheet')}' sheet — check the column used."
+        if result.get("type") == "chart" and result["data"].empty:
+            return f"No trend data found for that query in the '{plan.get('sheet')}' sheet."
+        result.setdefault("title", result.get("label") or f"Query Results: {question}")
+        return result
+
+    if result.empty:
+        return f"No records found for that criteria in the '{plan.get('sheet')}' sheet."
+
+    return {"type": "table", "title": f"Query Results: {question}", "data": result}
+
+
 def run_agent(df_dict: dict, question: str):
     if not question or not question.strip():
         return "Please ask a question about the medical data."
@@ -506,18 +553,14 @@ def run_agent(df_dict: dict, question: str):
 
         result = execute_query_plan(df_dict, plan)
 
-        if isinstance(result, dict):
-            if result.get("type") == "metric" and result.get("value") is None:
-                return f"Couldn't compute that in the '{plan.get('sheet')}' sheet — check the column used."
-            if result.get("type") == "chart" and result["data"].empty:
-                return f"No trend data found for that query in the '{plan.get('sheet')}' sheet."
-            result.setdefault("title", result.get("label") or f"Query Results: {question}")
-            return result
+        if plan.get("mode") == "multi_step":
+            formatted = [
+                _format_result(item["result"], item["step_plan"], question)
+                for item in result
+            ]
+            return {"type": "multi", "title": f"Query Results: {question}", "results": formatted}
 
-        if result.empty:
-            return f"No records found for that criteria in the '{plan.get('sheet')}' sheet."
-
-        return {"type": "table", "title": f"Query Results: {question}", "data": result}
+        return _format_result(result, plan, question)
 
     except requests.exceptions.ConnectionError:
         logger.warning("Ollama connection failed")
