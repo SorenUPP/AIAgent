@@ -585,20 +585,20 @@ def run_agent(df_dict: dict, question: str):
         logger.error("Ollama returned HTTP %s for question '%s': %s", status, question, body_snippet)
         if status == 404:
             return (
-                f"⚠️ Ollama returned 404 — the model '{config.OLLAMA_MODEL}' isn't available. "
-                f"Run `ollama pull {config.OLLAMA_MODEL}` (or set OLLAMA_MODEL to a model you've "
-                f"already pulled) and try again."
-            )
-        return f"⚠️ Ollama returned an error (HTTP {status}). Check the Ollama server logs for details."
+            f"Error: Ollama returned 404 — the model '{config.OLLAMA_MODEL}' isn't available. "
+            f"Run `ollama pull {config.OLLAMA_MODEL}` (or set OLLAMA_MODEL to a model you've "
+            f"already pulled) and try again."
+)
+        return f"Error: Ollama returned an error (HTTP {status}). Check the Ollama server logs for details."
     except requests.exceptions.RequestException as e:
         logger.exception("Unhandled network error talking to Ollama for question: %s", question)
-        return f"⚠️ Couldn't reach Ollama: {e}"
+        return f"Error: Couldn't reach Ollama: {e}"
     except (json.JSONDecodeError, PlanValidationError) as e:
         logger.warning("LLM plan rejected after retries for question '%s': %s", question, e)
         return "AI returned an invalid query plan. Try rewording the question."
     except ExecutionError as e:
         logger.warning("Execution error for question '%s': %s", question, e)
-        return f"⚠️ Couldn't run that query: {e}"
+        return f"Error: Couldn't run that query: {e}"
     except KeyError:
         logger.exception("Query plan missing expected field")
         return "The AI's query plan was malformed. Try rewording the question."

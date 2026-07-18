@@ -40,7 +40,7 @@ def render_block(content, key_prefix="block"):
             st.dataframe(content["data"], use_container_width=True, hide_index=True)
             csv = content["data"].to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇ Export as CSV", data=csv, file_name="medagent_query_result.csv",
+                "Export as CSV", data=csv, file_name="medagent_query_result.csv",
                 mime="text/csv", key=f"{key_prefix}_export",
             )
         elif ctype == "metric":
@@ -51,7 +51,7 @@ def render_block(content, key_prefix="block"):
             st.line_chart(chart_df[[content["y"]]])
             csv = content["data"].to_csv(index=False).encode("utf-8")
             st.download_button(
-                "⬇ Export as CSV", data=csv, file_name="medagent_trend_result.csv",
+                "Export as CSV", data=csv, file_name="medagent_trend_result.csv",
                 mime="text/csv", key=f"{key_prefix}_export",
             )
         else:
@@ -63,8 +63,7 @@ def render_block(content, key_prefix="block"):
 def render_message(msg, msg_index):
     role = msg["role"]
     content = msg["content"]
-    avatar = "🧑‍⚕️" if role == "user" else "🩺"
-    with st.chat_message(role, avatar=avatar):
+    with st.chat_message(role):
         if isinstance(content, dict) and content.get("type") == "multi":
             st.subheader(content["title"])
             for i, block in enumerate(content["results"], start=1):
@@ -100,13 +99,18 @@ div.history-tab-marker + div[data-testid="stPopover"] > button {
     border: none;
     font-size: 0.85rem;
     letter-spacing: 0.03em;
+    transition: padding-right 0.15s ease, background-color 0.15s ease;
+}
+div.history-tab-marker + div[data-testid="stPopover"] > button:hover {
+    background: #111827;
+    padding-right: 14px;
 }
 </style>
 <div class="history-tab-marker"></div>
 """, unsafe_allow_html=True)
 
 if archived:
-    with st.popover(f"◂ History ({len(archived)})"):
+    with st.popover(f"History ({len(archived)})"):
         st.caption("Earlier in this conversation")
         for i, msg in enumerate(archived):
             render_message(msg, msg_index=f"archived{i}")
@@ -115,8 +119,17 @@ if archived:
 for i, msg in enumerate(current):
     render_message(msg, msg_index=f"current{i}")
 
-# --- suggestion chips (only before first message) --------------------
+if current:
+    ui_common.scroll_chat_to_bottom()
+
+# --- onboarding / suggestion chips (only before first message) -------
 if not st.session_state.messages and st.session_state.file_loaded:
+    ui_common.render_empty_state(
+        "Ask anything about your patient data",
+        "Try one of the prompts below, or type your own question in the box at the bottom of the page.",
+        mark="?",
+    )
+    st.markdown("**Suggested questions**")
     suggestions = [
         "How many patients have diabetes?",
         "Show me PT-0001's full profile",
@@ -125,7 +138,6 @@ if not st.session_state.messages and st.session_state.file_loaded:
         "List all patients over 70",
         "Who has a penicillin allergy?",
     ]
-    st.markdown("**Try asking:**")
     cols = st.columns(3)
     for i, s in enumerate(suggestions):
         with cols[i % 3]:
@@ -147,11 +159,23 @@ if question and question.strip():
     else:
         st.session_state.messages.append({"role": "user", "content": question})
 
-        with st.spinner("Analysing..."):
-            try:
-                answer = run_agent(st.session_state.df_dict, question)
-            except Exception as e:
-                answer = f"! **Unexpected error while analysing:** `{e}`"
+        # Echo the question and show a typing indicator immediately, before the
+        # (blocking) model call runs, so the UI feels responsive rather than frozen.
+        with st.chat_message("user"):
+            st.markdown(html.escape(question))
+        with st.chat_message("assistant"):
+            st.markdown(
+                '<div class="typing-indicator">'
+                '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        ui_common.scroll_chat_to_bottom()
+
+        try:
+            answer = run_agent(st.session_state.df_dict, question)
+        except Exception as e:
+            answer = f"Error: Unexpected error while analysing: `{e}`"
 
         if answer == "OLLAMA_OFFLINE":
             answer = "**Ollama went offline.** Please restart with `ollama serve`."
@@ -159,7 +183,7 @@ if question and question.strip():
             answer = "**Timeout.** The model is taking too long — try a shorter question."
 
         is_error = isinstance(answer, str) and (
-            answer.startswith(("!", "ERROR", "⚠️", "**Ollama", "**Timeout"))
+            answer.startswith(("Error:", "ERROR", "**Ollama", "**Timeout"))
         )
         outcome = "error" if is_error else "success"
         auth_db.log_action(st.session_state.auth_user["username"], "query", detail=f"[{outcome}] {question}")
@@ -168,4 +192,8 @@ if question and question.strip():
         st.rerun()
 
 if not st.session_state.file_loaded:
-    st.info("Upload an Excel file (or the default patients.xlsx will load automatically) to get started.")
+    ui_common.render_empty_state(
+        "No dataset loaded yet",
+        "Upload an Excel file from the sidebar, or wait a moment for the default patients.xlsx to load automatically.",
+        mark="i",
+    )

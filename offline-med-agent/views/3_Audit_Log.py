@@ -4,7 +4,7 @@ import pandas as pd
 import ui_common
 import auth_db
 
-st.set_page_config(page_title="MedAgent — Audit Log", page_icon="📋", layout="wide")
+st.set_page_config(page_title="MedAgent — Audit Log", page_icon=":material/fact_check:", layout="wide")
 ui_common.bootstrap()
 ui_common.require_login()
 ui_common.render_sidebar()
@@ -77,7 +77,11 @@ st.markdown(f"""
 st.subheader("Event Log")
 
 if df.empty:
-    st.caption("No matching audit events.")
+    ui_common.render_empty_state(
+        "No matching audit events",
+        "Try widening your filters — no events match the current user/action selection.",
+        mark="?",
+    )
 else:
     display_df = df.rename(columns={
         "timestamp": "Timestamp (UTC)",

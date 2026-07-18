@@ -4,7 +4,7 @@ import pandas as pd
 import ui_common
 from tools import compute_patient_risk_scores
 
-st.set_page_config(page_title="MedAgent — Patient Explorer", page_icon="👥", layout="wide")
+st.set_page_config(page_title="MedAgent — Patient Explorer", page_icon=":material/groups:", layout="wide")
 ui_common.bootstrap()
 ui_common.require_login()
 ui_common.render_sidebar()
@@ -18,14 +18,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 if not st.session_state.file_loaded or not st.session_state.df_dict:
-    st.info("Load an Excel file from the sidebar to browse patients.")
+    ui_common.render_empty_state(
+        "No dataset loaded yet",
+        "Load an Excel file from the sidebar to browse patient records.",
+        mark="i",
+    )
     st.stop()
 
 df_dict = st.session_state.df_dict
 demo = df_dict.get("Patient Demographics", pd.DataFrame())
 
 if demo.empty:
-    st.warning("No 'Patient Demographics' sheet found in the loaded data.")
+    ui_common.render_empty_state(
+        "No 'Patient Demographics' sheet found",
+        "The loaded workbook doesn't contain a sheet named 'Patient Demographics'.",
+        mark="!",
+    )
     st.stop()
 
 search = st.text_input("Search by name or Patient ID", placeholder="e.g. Smith or PT-0001")
@@ -39,8 +47,15 @@ if search.strip():
         mask |= demo[col].astype(str).str.lower().str.contains(term, na=False)
     filtered = demo[mask]
 
-st.caption(f"{len(filtered)} of {len(demo)} patients shown")
-st.dataframe(filtered, use_container_width=True, hide_index=True)
+if filtered.empty:
+    ui_common.render_empty_state(
+        "No matches",
+        f"Nothing in the current dataset matches \u201c{search.strip()}\u201d. Try a different name or Patient ID.",
+        mark="?",
+    )
+else:
+    st.caption(f"{len(filtered)} of {len(demo)} patients shown")
+    st.dataframe(filtered, use_container_width=True, hide_index=True)
 
 if "Patient ID" in filtered.columns and not filtered.empty:
     st.markdown("---")
@@ -48,8 +63,12 @@ if "Patient ID" in filtered.columns and not filtered.empty:
     selected_id = st.selectbox("Select a Patient ID", filtered["Patient ID"].tolist())
 
     if selected_id:
-        with st.spinner("Loading patient profile..."):
-            risk_df = compute_patient_risk_scores(df_dict)
+        profile_placeholder = st.empty()
+        with profile_placeholder.container():
+            ui_common.render_skeleton_rows(2, widths=["24%", "40%"])
+        risk_df = compute_patient_risk_scores(df_dict)
+        profile_placeholder.empty()
+
         if not risk_df.empty:
             patient_risk = risk_df[risk_df["Patient ID"] == selected_id]
             if not patient_risk.empty:
